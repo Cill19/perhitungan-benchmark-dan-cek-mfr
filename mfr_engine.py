@@ -80,6 +80,12 @@ MFR_ORDER_DETAIL_COLUMNS = [
     "is_mfr_included",
 ]
 
+MFR_ORDER_DETAIL_COMPONENT_COLUMNS = [
+    "seller_rebate",
+    "shopee_discount",
+    "platform_discount",
+]
+
 MFR_DISPLAY_LABELS = {
     "marketplace": "Marketplace",
     "gmv_all": "GMV ALL",
@@ -155,6 +161,47 @@ def _normalize_shopee_amount(
 
 def _empty_order_detail() -> pd.DataFrame:
     return pd.DataFrame(columns=MFR_ORDER_DETAIL_COLUMNS)
+
+
+def _standardize_order_detail_schema(
+    df: pd.DataFrame,
+    context: str,
+) -> pd.DataFrame:
+    """Return one canonical, calculation-safe Daftar Pesanan schema."""
+    standardized = df.copy()
+
+    # Component columns are shared by every marketplace. Missing/non-applicable
+    # components must be numeric zero so concat cannot create sparse/object
+    # columns and downstream calculations never depend on display labels.
+    for column in MFR_ORDER_DETAIL_COMPONENT_COLUMNS:
+        if column not in standardized.columns:
+            standardized[column] = 0.0
+
+    _require_internal_schema(
+        standardized,
+        MFR_ORDER_DETAIL_COLUMNS,
+        context,
+    )
+
+    standardized["paid_amount"] = pd.to_numeric(
+        standardized["paid_amount"], errors="raise"
+    )
+    for column in MFR_ORDER_DETAIL_COMPONENT_COLUMNS:
+        standardized[column] = (
+            pd.to_numeric(standardized[column], errors="raise")
+            .fillna(0.0)
+            .astype(float)
+        )
+
+    # Enforce non-applicable marketplace components as numeric zero.
+    marketplace = standardized["marketplace"].astype("string").str.upper()
+    standardized.loc[marketplace.eq("SHO"), "platform_discount"] = 0.0
+    standardized.loc[
+        marketplace.isin(["TIK", "TOK", "LAZ"]),
+        ["seller_rebate", "shopee_discount"],
+    ] = 0.0
+
+    return standardized[MFR_ORDER_DETAIL_COLUMNS].copy()
 
 
 def _quantity_or_one(series: pd.Series) -> pd.Series:
@@ -370,7 +417,10 @@ def build_shopee_order_detail(df: pd.DataFrame) -> pd.DataFrame:
     )
     expanded["platform_discount"] = 0.0
     expanded["is_mfr_included"] = True
-    return expanded[MFR_ORDER_DETAIL_COLUMNS].reset_index(drop=True)
+    return _standardize_order_detail_schema(
+        expanded.reset_index(drop=True),
+        "detail pesanan Shopee",
+    )
 
 def process_shopee_mfr(df: pd.DataFrame) -> dict[str, Any]:
     """
@@ -665,7 +715,10 @@ def build_tik_family_order_detail(
         0.0,
     )
     expanded["is_mfr_included"] = True
-    return expanded[MFR_ORDER_DETAIL_COLUMNS].reset_index(drop=True)
+    return _standardize_order_detail_schema(
+        expanded.reset_index(drop=True),
+        f"detail pesanan {marketplace}",
+    )
 
 def process_tik_family_mfr(
     df: pd.DataFrame,
@@ -979,7 +1032,10 @@ def build_lazada_order_detail(df: pd.DataFrame) -> pd.DataFrame:
     detail["sequence"] = (
         detail.groupby("order_id", sort=False).cumcount() + 1
     ).astype(int)
-    return detail[MFR_ORDER_DETAIL_COLUMNS].reset_index(drop=True)
+    return _standardize_order_detail_schema(
+        detail.reset_index(drop=True),
+        "detail pesanan Lazada",
+    )
 
 def process_lazada_mfr(df: pd.DataFrame) -> dict[str, Any]:
     """
@@ -1164,10 +1220,12 @@ def calculate_mfr(
             _require_internal_schema(s_df, MFR_STATUS_COLUMNS, "breakdown status file")
             all_status.append(s_df)
         if d_df is not None and not d_df.empty:
-            _require_internal_schema(
-                d_df, MFR_ORDER_DETAIL_COLUMNS, "daftar pesanan file"
+            all_order_detail.append(
+                _standardize_order_detail_schema(
+                    d_df,
+                    f"daftar pesanan file {res.get('marketplace', '')}",
+                )
             )
-            all_order_detail.append(d_df)
         all_warnings.extend(w_list)
 
     if not all_monthly:
@@ -1262,21 +1320,13 @@ def calculate_mfr(
         )
 
     if all_order_detail:
-        combined_detail = pd.concat(all_order_detail, ignore_index=True)
+        combined_detail = _standardize_order_detail_schema(
+            pd.concat(all_order_detail, ignore_index=True),
+            "hasil concat daftar pesanan",
+        )
         combined_detail["order_date"] = pd.to_datetime(
             combined_detail["order_date"], errors="coerce"
         )
-        combined_detail["paid_amount"] = pd.to_numeric(
-            combined_detail["paid_amount"], errors="raise"
-        )
-        for column in [
-            "seller_rebate",
-            "shopee_discount",
-            "platform_discount",
-        ]:
-            combined_detail[column] = pd.to_numeric(
-                combined_detail[column], errors="raise"
-            )
         order_detail = combined_detail[
             combined_detail["order_date"].dt.to_period("M").dt.to_timestamp()
             == ts_month
@@ -1291,6 +1341,10 @@ def calculate_mfr(
             )
             .drop(columns="_marketplace_rank")
             .reset_index(drop=True)
+        )
+        order_detail = _standardize_order_detail_schema(
+            order_detail,
+            "output daftar pesanan",
         )
     else:
         order_detail = _empty_order_detail()

@@ -57,6 +57,7 @@ from thailand_tiktok_engine import (
 from mfr_engine import (
     MFR_DISPLAY_LABELS,
     MFR_METRIC_COLUMNS,
+    MFR_ORDER_DETAIL_COLUMNS,
     MFR_ORDER_DETAIL_DISPLAY_LABELS,
     process_dataframe_mfr,
     calculate_mfr,
@@ -66,6 +67,8 @@ from mfr_engine import (
 
 
 LOGGER = logging.getLogger(__name__)
+
+MFR_ORDER_DETAIL_CACHE_VERSION = "snake_case_discount_components_v1"
 
 
 # ============================================================
@@ -1939,6 +1942,8 @@ def run_mfr_flow(
                         })
 
         st.session_state["mfr_cache"] = {
+            "order_detail_cache_version": MFR_ORDER_DETAIL_CACHE_VERSION,
+            "order_detail_schema": tuple(MFR_ORDER_DETAIL_COLUMNS),
             "file_results": mfr_file_results,
             "processed_info": processed_info,
             "file_errors": file_errors,
@@ -1947,6 +1952,19 @@ def run_mfr_flow(
 
     if "mfr_cache" in st.session_state and st.session_state["mfr_cache"].get("file_results"):
         cache = st.session_state["mfr_cache"]
+        cache_schema_is_current = (
+            cache.get("order_detail_cache_version")
+            == MFR_ORDER_DETAIL_CACHE_VERSION
+            and tuple(cache.get("order_detail_schema", ()))
+            == tuple(MFR_ORDER_DETAIL_COLUMNS)
+        )
+        if not cache_schema_is_current:
+            del st.session_state["mfr_cache"]
+            st.info(
+                "Schema Daftar Pesanan telah diperbarui. "
+                "Klik kembali Validasi & Hitung MFR untuk memproses ulang upload."
+            )
+            return
         processed_info = cache["processed_info"]
         file_errors = cache["file_errors"]
         file_results = cache["file_results"]
@@ -2063,9 +2081,14 @@ def run_mfr_flow(
             # Line-item detail following the reference Daftar Pesanan layout.
             st.subheader("Daftar Pesanan")
             order_df = mfr_result["order_detail"].copy()
-            visible_order_columns = list(MFR_ORDER_DETAIL_DISPLAY_LABELS)
-            order_display = order_df[visible_order_columns].rename(
+            order_display = order_df.rename(
                 columns=MFR_ORDER_DETAIL_DISPLAY_LABELS
+            )
+            visible_order_columns = list(
+                MFR_ORDER_DETAIL_DISPLAY_LABELS.values()
+            )
+            order_display = order_display.reindex(
+                columns=visible_order_columns
             )
             order_display["Tanggal"] = pd.to_datetime(
                 order_display["Tanggal"], errors="coerce"

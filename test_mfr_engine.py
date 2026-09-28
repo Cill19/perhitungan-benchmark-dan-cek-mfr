@@ -5,6 +5,7 @@ from openpyxl import load_workbook
 from benchmark_engine import read_order_file
 from mfr_engine import (
     MFR_METRIC_COLUMNS,
+    MFR_ORDER_DETAIL_COLUMNS,
     process_shopee_mfr,
     process_tik_family_mfr,
     process_lazada_mfr,
@@ -61,6 +62,7 @@ assert sho_003_detail["shopee_discount"].tolist() == [10000.0, 0.0]
 assert sho_detail["seller_rebate"].sum() == r_sho["seller_rebate"]
 assert sho_detail["shopee_discount"].sum() == r_sho["shopee_discount"]
 assert sho_detail["platform_discount"].sum() == 0
+assert sho_detail.columns.tolist() == MFR_ORDER_DETAIL_COLUMNS
 print("✅ Test 1 (Shopee MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -101,6 +103,7 @@ assert res_tik["order_detail"]["platform_discount"].sum() == r_tik[
 ]
 assert res_tik["order_detail"]["seller_rebate"].sum() == 0
 assert res_tik["order_detail"]["shopee_discount"].sum() == 0
+assert res_tik["order_detail"].columns.tolist() == MFR_ORDER_DETAIL_COLUMNS
 print("✅ Test 2 (TikTok MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -124,6 +127,7 @@ assert r_tok["excluded_rows"] == 0
 assert res_tok["order_detail"]["platform_discount"].sum() == r_tok[
     "platform_discount"
 ]
+assert res_tok["order_detail"].columns.tolist() == MFR_ORDER_DETAIL_COLUMNS
 print("✅ Test 3 (Tokopedia MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -146,6 +150,7 @@ assert r_laz["excluded_rows"] == 1
 assert res_laz["order_detail"]["platform_discount"].sum() == r_laz[
     "platform_discount"
 ]
+assert res_laz["order_detail"].columns.tolist() == MFR_ORDER_DETAIL_COLUMNS
 print("✅ Test 4 (Lazada MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -179,6 +184,17 @@ summary = mfr_final["marketplace_summary"]
 sho_sum_omzet = summary[summary["marketplace"] == "SHO"]["net_gmv"].iloc[0]
 assert sho_sum_omzet == 480000.0, f"Shopee MFR in Sept should be 480k, got {sho_sum_omzet}"
 print(f"✅ Test 5 (Multi-month isolation & Total MFR = Rp {mfr_final['mfr_total']:,.0f}) PASSED")
+
+# Non-applicable component columns from a legacy/sparse detail are normalized
+# before concat instead of leaking display-label or object-dtype assumptions.
+legacy_tik = dict(res_tik)
+legacy_tik["order_detail"] = res_tik["order_detail"].drop(
+    columns=["seller_rebate", "shopee_discount"]
+)
+legacy_tik_result = calculate_mfr([legacy_tik], selected_month="2026-09-01")
+assert legacy_tik_result["order_detail"].columns.tolist() == MFR_ORDER_DETAIL_COLUMNS
+assert legacy_tik_result["order_detail"]["seller_rebate"].eq(0.0).all()
+assert legacy_tik_result["order_detail"]["shopee_discount"].eq(0.0).all()
 
 # -------------------------------------------------------------
 # TEST 6: STATUS BREAKDOWN
