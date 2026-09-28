@@ -2074,13 +2074,17 @@ def run_mfr_flow(
                 if pd.isna(value)
                 else f"{value.day} {value.strftime('%b %Y')}"
             )
-            order_display["Harga Terbayarkan"] = order_display[
-                "Harga Terbayarkan"
-            ].apply(lambda value: f"Rp {value:,.0f}".replace(",", "."))
-            for column in ["Harga Jual Ritel", "Biaya Diskon Campaign"]:
-                order_display[column] = ""
             for column in [
-                "Marketplace-Toko",
+                "Harga Terbayarkan",
+                "Seller Rebate",
+                "Diskon Shopee",
+                "Platform Discount",
+            ]:
+                order_display[column] = order_display[column].apply(
+                    lambda value: f"Rp {value:,.0f}".replace(",", ".")
+                )
+            for column in [
+                "Marketplace",
                 "Nomor Pesanan",
                 "SKU",
                 "Status Pesanan",

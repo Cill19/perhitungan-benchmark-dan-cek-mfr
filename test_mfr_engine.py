@@ -53,6 +53,14 @@ assert r_sho["net_gmv"] == 480000.0
 assert r_sho["source_rows"] == 5
 assert r_sho["included_rows"] == 4
 assert r_sho["excluded_rows"] == 1
+sho_detail = res_sho["order_detail"]
+sho_003_detail = sho_detail[sho_detail["order_id"] == "SHO-003"]
+assert sho_003_detail["sequence"].tolist() == [1, 2]
+assert sho_003_detail["seller_rebate"].tolist() == [15000.0, 0.0]
+assert sho_003_detail["shopee_discount"].tolist() == [10000.0, 0.0]
+assert sho_detail["seller_rebate"].sum() == r_sho["seller_rebate"]
+assert sho_detail["shopee_discount"].sum() == r_sho["shopee_discount"]
+assert sho_detail["platform_discount"].sum() == 0
 print("✅ Test 1 (Shopee MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -88,6 +96,11 @@ assert r_tik["net_gmv"] == 418000.0
 assert r_tik["included_rows"] == 4
 assert r_tik["excluded_rows"] == 1
 assert len(res_tik["warnings"]) >= 1  # warning for blank status
+assert res_tik["order_detail"]["platform_discount"].sum() == r_tik[
+    "platform_discount"
+]
+assert res_tik["order_detail"]["seller_rebate"].sum() == 0
+assert res_tik["order_detail"]["shopee_discount"].sum() == 0
 print("✅ Test 2 (TikTok MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -108,6 +121,9 @@ r_tok = res_tok["monthly"].iloc[0]
 assert r_tok["net_gmv"] == 220000.0
 assert r_tok["included_rows"] == 2
 assert r_tok["excluded_rows"] == 0
+assert res_tok["order_detail"]["platform_discount"].sum() == r_tok[
+    "platform_discount"
+]
 print("✅ Test 3 (Tokopedia MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -127,6 +143,9 @@ r_laz = res_laz["monthly"].iloc[0]
 assert r_laz["net_gmv"] == 225000.0
 assert r_laz["included_rows"] == 2
 assert r_laz["excluded_rows"] == 1
+assert res_laz["order_detail"]["platform_discount"].sum() == r_laz[
+    "platform_discount"
+]
 print("✅ Test 4 (Lazada MFR) PASSED")
 
 # -------------------------------------------------------------
@@ -280,10 +299,27 @@ print("✅ Test 10 (GOJI-M August 2026 exact regression) PASSED")
 order_detail = goji["order_detail"]
 assert len(order_detail) == 2815
 assert order_detail["paid_amount"].dtype.kind in {"f", "i", "u"}
+for component in ["seller_rebate", "shopee_discount", "platform_discount"]:
+    assert order_detail[component].dtype.kind in {"f", "i", "u"}
 assert set(order_detail["marketplace"]) == {"SHO", "TIK", "TOK"}
 assert order_detail["order_date"].dt.to_period("M").astype(str).eq("2026-08").all()
-assert order_detail["retail_price"].isna().all()
-assert order_detail["campaign_discount"].isna().all()
+
+expected_component_totals = {
+    "SHO": (6433295, 9500, 0),
+    "TIK": (0, 0, 13697681),
+    "TOK": (0, 0, 287907),
+}
+for marketplace, component_totals in expected_component_totals.items():
+    rows = order_detail[order_detail["marketplace"] == marketplace]
+    assert tuple(
+        rows[column].sum()
+        for column in ["seller_rebate", "shopee_discount", "platform_discount"]
+    ) == component_totals
+
+shopee_nonfirst = order_detail[
+    order_detail["marketplace"].eq("SHO") & order_detail["sequence"].ne(1)
+]
+assert shopee_nonfirst[["seller_rebate", "shopee_discount"]].eq(0).all().all()
 
 expected_detail_totals = {
     "SHO": (973, 166086072),
@@ -357,13 +393,14 @@ assert "Daftar Pesanan" in export_workbook.sheetnames
 export_sheet = export_workbook["Daftar Pesanan"]
 expected_headers = [
     "Tanggal",
-    "Marketplace-Toko",
+    "Marketplace",
     "Nomor Pesanan",
     "SKU",
     "Urutan",
     "Harga Terbayarkan",
-    "Harga Jual Ritel",
-    "Biaya Diskon Campaign",
+    "Seller Rebate",
+    "Diskon Shopee",
+    "Platform Discount",
     "Status Pesanan",
     "Alasan Pembatalan",
 ]
@@ -377,11 +414,14 @@ assert export_sheet["C2"].number_format == "@"
 assert export_sheet["D2"].number_format == "@"
 assert isinstance(export_sheet["E2"].value, int)
 assert isinstance(export_sheet["F2"].value, (int, float))
-export_data = list(
-    export_sheet.iter_rows(min_row=2, max_col=10, values_only=True)
-)
+for coordinate in ["F2", "G2", "H2", "I2"]:
+    assert export_sheet[coordinate].number_format == '"Rp "#,##0'
+export_data = list(export_sheet.iter_rows(min_row=2, max_col=11, values_only=True))
 assert sum(row[5] for row in export_data) == 472197078
-assert all(row[6] is None and row[7] is None for row in export_data)
+assert sum(row[6] for row in export_data) == 6433295
+assert sum(row[7] for row in export_data) == 9500
+assert sum(row[8] for row in export_data) == 13985588
+assert all(isinstance(row[index], (int, float)) for row in export_data for index in range(5, 9))
 assert export_data[0][4] == 1
 export_workbook.close()
 print("✅ Test 11 (Daftar Pesanan reference, reconciliation, export) PASSED")

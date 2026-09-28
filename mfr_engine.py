@@ -72,8 +72,9 @@ MFR_ORDER_DETAIL_COLUMNS = [
     "sku",
     "sequence",
     "paid_amount",
-    "retail_price",
-    "campaign_discount",
+    "seller_rebate",
+    "shopee_discount",
+    "platform_discount",
     "order_status",
     "cancellation_reason",
     "is_mfr_included",
@@ -97,13 +98,14 @@ MFR_DISPLAY_LABELS = {
 
 MFR_ORDER_DETAIL_DISPLAY_LABELS = {
     "order_date": "Tanggal",
-    "marketplace": "Marketplace-Toko",
+    "marketplace": "Marketplace",
     "order_id": "Nomor Pesanan",
     "sku": "SKU",
     "sequence": "Urutan",
     "paid_amount": "Harga Terbayarkan",
-    "retail_price": "Harga Jual Ritel",
-    "campaign_discount": "Biaya Diskon Campaign",
+    "seller_rebate": "Seller Rebate",
+    "shopee_discount": "Diskon Shopee",
+    "platform_discount": "Platform Discount",
     "order_status": "Status Pesanan",
     "cancellation_reason": "Alasan Pembatalan",
 }
@@ -327,10 +329,13 @@ def build_shopee_order_detail(df: pd.DataFrame) -> pd.DataFrame:
     group = lines.groupby(group_columns, sort=False)
     total_quantity = group["quantity"].transform("sum")
     order_rebate = group["seller_rebate"].transform("max")
+    order_shopee_discount = group["shopee_discount"].transform("sum")
+    lines["_order_seller_rebate"] = order_rebate
+    lines["_order_shopee_discount"] = order_shopee_discount
     target_amount = (
         group["subtotal"].transform("sum")
         - order_rebate
-        + group["shopee_discount"].transform("sum")
+        + order_shopee_discount
     )
     fallback_unit_base = lines["subtotal"] / lines["quantity"]
     reference_unit_base = lines["unit_base"].where(
@@ -352,12 +357,18 @@ def build_shopee_order_detail(df: pd.DataFrame) -> pd.DataFrame:
     expanded["sequence"] = (
         expanded.groupby(group_columns, sort=False).cumcount() + 1
     ).astype(int)
-    expanded["retail_price"] = pd.Series(
-        pd.NA, index=expanded.index, dtype="Float64"
+    first_order_row = expanded["sequence"].eq(1)
+    expanded["seller_rebate"] = np.where(
+        first_order_row,
+        expanded["_order_seller_rebate"],
+        0.0,
     )
-    expanded["campaign_discount"] = pd.Series(
-        pd.NA, index=expanded.index, dtype="Float64"
+    expanded["shopee_discount"] = np.where(
+        first_order_row,
+        expanded["_order_shopee_discount"],
+        0.0,
     )
+    expanded["platform_discount"] = 0.0
     expanded["is_mfr_included"] = True
     return expanded[MFR_ORDER_DETAIL_COLUMNS].reset_index(drop=True)
 
@@ -609,6 +620,7 @@ def build_tik_family_order_detail(
             "sku": sku,
             "quantity": quantity,
             "line_total": subtotal + platform_discount,
+            "platform_discount": platform_discount,
             "purchase_channel": purchase_channel,
             "order_status": order_status,
             "cancellation_reason": reason,
@@ -642,11 +654,15 @@ def build_tik_family_order_detail(
     expanded["sequence"] = (
         expanded.groupby(group_columns, sort=False).cumcount() + 1
     ).astype(int)
-    expanded["retail_price"] = pd.Series(
-        pd.NA, index=expanded.index, dtype="Float64"
-    )
-    expanded["campaign_discount"] = pd.Series(
-        pd.NA, index=expanded.index, dtype="Float64"
+    expanded["seller_rebate"] = 0.0
+    expanded["shopee_discount"] = 0.0
+    # SKU Platform Discount belongs to the source line. Quantity expansion is
+    # retained for Harga Terbayarkan, so record the line value on its first
+    # expanded unit only to prevent duplication while preserving the line sum.
+    expanded["platform_discount"] = np.where(
+        expanded["_unit_position"].eq(0),
+        expanded["platform_discount"],
+        0.0,
     )
     expanded["is_mfr_included"] = True
     return expanded[MFR_ORDER_DETAIL_COLUMNS].reset_index(drop=True)
@@ -945,10 +961,9 @@ def build_lazada_order_detail(df: pd.DataFrame) -> pd.DataFrame:
             "order_id": order_id,
             "sku": sku,
             "paid_amount": unit_price + platform_discount,
-            "retail_price": pd.Series(pd.NA, index=df.index, dtype="Float64"),
-            "campaign_discount": pd.Series(
-                pd.NA, index=df.index, dtype="Float64"
-            ),
+            "seller_rebate": 0.0,
+            "shopee_discount": 0.0,
+            "platform_discount": platform_discount,
             "order_status": status,
             "cancellation_reason": reason,
             "is_mfr_included": is_included,
@@ -1254,6 +1269,14 @@ def calculate_mfr(
         combined_detail["paid_amount"] = pd.to_numeric(
             combined_detail["paid_amount"], errors="raise"
         )
+        for column in [
+            "seller_rebate",
+            "shopee_discount",
+            "platform_discount",
+        ]:
+            combined_detail[column] = pd.to_numeric(
+                combined_detail[column], errors="raise"
+            )
         order_detail = combined_detail[
             combined_detail["order_date"].dt.to_period("M").dt.to_timestamp()
             == ts_month
@@ -1554,10 +1577,20 @@ def validate_mfr_order_detail(
         "rekonsiliasi daftar pesanan",
     )
     eligible = order_detail[order_detail["is_mfr_included"].astype(bool)]
-    paid_by_marketplace = eligible.groupby("marketplace")["paid_amount"].sum()
+    detail_metrics = [
+        "paid_amount",
+        "seller_rebate",
+        "shopee_discount",
+        "platform_discount",
+    ]
+    totals_by_marketplace = eligible.groupby("marketplace")[detail_metrics].sum()
     for _, row in marketplace_detail.iterrows():
         marketplace = str(row["marketplace"])
-        actual = float(paid_by_marketplace.get(marketplace, 0.0))
+        if marketplace in totals_by_marketplace.index:
+            marketplace_totals = totals_by_marketplace.loc[marketplace]
+        else:
+            marketplace_totals = pd.Series(0.0, index=detail_metrics)
+        actual = float(marketplace_totals["paid_amount"])
         expected = float(row["net_gmv"])
         difference = actual - expected
         audit.append(
@@ -1569,6 +1602,25 @@ def validate_mfr_order_detail(
                 expected=f"Rp {expected:,.0f}",
             )
         )
+
+        component_checks = [
+            ("seller_rebate", "Seller Rebate"),
+            ("shopee_discount", "Diskon Shopee"),
+            ("platform_discount", "Platform Discount"),
+        ]
+        for internal_column, display_label in component_checks:
+            component_actual = float(marketplace_totals[internal_column])
+            component_expected = float(row[internal_column])
+            component_difference = component_actual - component_expected
+            audit.append(
+                _audit_row(
+                    "PASS" if component_difference == 0 else "FAIL",
+                    f"Daftar Pesanan {display_label} = MFR {marketplace}",
+                    f"SUM {display_label} eligible harus sama persis dengan MFR.",
+                    actual=f"Rp {component_actual:,.0f}",
+                    expected=f"Rp {component_expected:,.0f}",
+                )
+            )
 
     sequence_ok = True
     for _, group in order_detail.groupby(["marketplace", "order_id"], sort=False):
@@ -1582,6 +1634,26 @@ def validate_mfr_order_detail(
             "Urutan Daftar Pesanan",
             "Urutan harus reset per marketplace dan Nomor Pesanan, lalu kontinu 1..N.",
             actual="Sesuai" if sequence_ok else "Tidak sesuai",
+            expected="Sesuai",
+        )
+    )
+
+    shopee_nonfirst = eligible[
+        eligible["marketplace"].eq("SHO") & eligible["sequence"].ne(1)
+    ]
+    shopee_component_once = (
+        shopee_nonfirst[["seller_rebate", "shopee_discount"]]
+        .fillna(0)
+        .eq(0)
+        .all()
+        .all()
+    )
+    audit.append(
+        _audit_row(
+            "PASS" if shopee_component_once else "FAIL",
+            "Komponen Order-Level Shopee Tidak Duplikat",
+            "Seller Rebate dan Diskon Shopee hanya boleh muncul pada Urutan 1.",
+            actual="Sesuai" if shopee_component_once else "Terduplikasi",
             expected="Sesuai",
         )
     )
@@ -1807,8 +1879,9 @@ def create_mfr_excel_report(mfr_result: dict[str, Any]) -> io.BytesIO:
         "sku",
         "sequence",
         "paid_amount",
-        "retail_price",
-        "campaign_discount",
+        "seller_rebate",
+        "shopee_discount",
+        "platform_discount",
         "order_status",
         "cancellation_reason",
     ]
@@ -1839,8 +1912,9 @@ def create_mfr_excel_report(mfr_result: dict[str, Any]) -> io.BytesIO:
             str(detail_row["sku"]),
             int(detail_row["sequence"]),
             float(detail_row["paid_amount"]),
-            None,
-            None,
+            float(detail_row["seller_rebate"]),
+            float(detail_row["shopee_discount"]),
+            float(detail_row["platform_discount"]),
             str(detail_row["order_status"]),
             str(detail_row["cancellation_reason"]),
         ]
@@ -1853,12 +1927,12 @@ def create_mfr_excel_report(mfr_result: dict[str, Any]) -> io.BytesIO:
             cell.border = thin_border
             if column_index in {3, 4}:
                 cell.number_format = "@"
-            elif column_index == 6:
+            elif column_index in {6, 7, 8, 9}:
                 cell.number_format = currency_format
 
     ws_orders.freeze_panes = "A2"
-    ws_orders.auto_filter.ref = f"A1:J{max(len(order_detail) + 1, 1)}"
-    detail_widths = [14, 18, 24, 18, 10, 20, 18, 24, 28, 28]
+    ws_orders.auto_filter.ref = f"A1:K{max(len(order_detail) + 1, 1)}"
+    detail_widths = [14, 18, 24, 18, 10, 20, 18, 18, 20, 28, 28]
     for column_index, width in enumerate(detail_widths, start=1):
         ws_orders.column_dimensions[get_column_letter(column_index)].width = width
 
