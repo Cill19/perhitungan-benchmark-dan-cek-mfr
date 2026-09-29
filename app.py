@@ -571,175 +571,224 @@ def render_seasonal_benchmark(
     )
 
     # ========================================================
-    # DISPLAY
+    # DETAIL DATA — PRESENTATION ONLY
     # ========================================================
 
-    c1, c2 = st.columns(2)
-
-    c1.metric(
-        "Benchmark Biasa",
-        (
-            f"{currency_symbol} "
-            f"{benchmark_regular:,.0f}"
-        ).replace(",", ".")
-        if benchmark_regular is not None
-        else "-"
+    regular_months = set(
+        pd.to_datetime(regular_data["month"])
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+    seasonal_months = set(
+        pd.to_datetime(seasonal_data["month"])
+        .dt.to_period("M")
+        .dt.to_timestamp()
     )
 
-    c2.metric(
-        "Benchmark Seasonal",
-        (
-            f"{currency_symbol} "
-            f"{benchmark_seasonal:,.0f}"
-        ).replace(",", ".")
-        if benchmark_seasonal is not None
-        else "-"
+    monthly_detail_source = result["monthly_combined"].copy()
+    monthly_detail_source["month"] = (
+        pd.to_datetime(monthly_detail_source["month"])
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+    regular_monthly_detail = (
+        monthly_detail_source[
+            monthly_detail_source["month"].isin(regular_months)
+        ]
+        .sort_values("month")
+        .reset_index(drop=True)
+        .copy()
+    )
+    seasonal_monthly_detail = (
+        monthly_detail_source[
+            monthly_detail_source["month"].isin(seasonal_months)
+        ]
+        .sort_values("month")
+        .reset_index(drop=True)
+        .copy()
     )
 
-    if selected_seasonal:
-        seasonal_labels = ", ".join(
-            pd.Timestamp(month).strftime("%B %Y")
-            for month in selected_seasonal
-        )
+    marketplace_detail_source = result["monthly_marketplace"].copy()
+    marketplace_detail_source["month"] = (
+        pd.to_datetime(marketplace_detail_source["month"])
+        .dt.to_period("M")
+        .dt.to_timestamp()
+    )
+    regular_marketplace_detail = (
+        marketplace_detail_source[
+            marketplace_detail_source["month"].isin(regular_months)
+        ]
+        .sort_values(["month", "marketplace"], kind="stable")
+        .reset_index(drop=True)
+        .copy()
+    )
+    seasonal_marketplace_detail = (
+        marketplace_detail_source[
+            marketplace_detail_source["month"].isin(seasonal_months)
+        ]
+        .sort_values(["month", "marketplace"], kind="stable")
+        .reset_index(drop=True)
+        .copy()
+    )
 
-        st.caption(
-            f"Benchmark biasa dihitung dari "
-            f"{len(regular_data)} bulan non-seasonal. "
-            f"{len(seasonal_data)} bulan seasonal "
-            f"({seasonal_labels}) di-take out dari benchmark biasa."
-        )
+    def format_currency(value):
+        numeric_value = pd.to_numeric(value, errors="coerce")
+        if pd.isna(numeric_value):
+            return "-"
+        if currency_symbol == "Rp":
+            return f"Rp {numeric_value:,.0f}".replace(",", ".")
+        return f"{currency_symbol} {numeric_value:,.0f}"
 
-    else:
-        st.caption(
-            f"Belum ada bulan seasonal yang dipilih. "
-            f"Benchmark biasa masih menggunakan "
-            f"{len(regular_data)} bulan."
-        )     
+    monthly_labels = {
+        "month": "Bulan",
+        "shopee": "Shopee",
+        "tiktok": "TikTok",
+        "tokopedia": "Tokopedia",
+        "lazada": "Lazada",
+        "total_gmv": "Total Benchmark GMV",
+    }
+    marketplace_labels = {
+        "marketplace": "Marketplace",
+        "month": "Bulan",
+        "gmv_all": "GMV All",
+        "gmv_ex_cancel": "GMV Exc Batal",
+        "platform_discount": "Platform Discount",
+        "seller_rebate": "Seller Rebate",
+        "benchmark_gmv": "Benchmark GMV",
+        "source_rows": "Source Rows",
+    }
 
-            # ========================================================
-    # DETAIL PERHITUNGAN
+    def prepare_monthly_display(detail):
+        display = detail.copy()
+        visible_columns = [
+            column for column in monthly_labels
+            if column in display.columns
+        ]
+        display = display[visible_columns].copy()
+        display["month"] = pd.to_datetime(
+            display["month"]
+        ).dt.strftime("%B %Y")
+        for column in visible_columns:
+            if column != "month":
+                display[column] = display[column].apply(format_currency)
+        return display.rename(columns=monthly_labels)
+
+    def prepare_marketplace_display(detail):
+        display = detail.copy()
+        visible_columns = [
+            column for column in marketplace_labels
+            if column in display.columns
+        ]
+        display = display[visible_columns].copy()
+        display["month"] = pd.to_datetime(
+            display["month"]
+        ).dt.strftime("%B %Y")
+        if currency_symbol == "฿":
+            display["marketplace"] = display["marketplace"].replace(
+                {"SHO_TH": "SHO", "TIK_TH": "TIK"}
+            )
+        currency_columns = [
+            "gmv_all",
+            "gmv_ex_cancel",
+            "platform_discount",
+            "seller_rebate",
+            "benchmark_gmv",
+        ]
+        for column in currency_columns:
+            if column in display.columns:
+                display[column] = display[column].apply(format_currency)
+        if "source_rows" in display.columns:
+            display["source_rows"] = (
+                pd.to_numeric(display["source_rows"], errors="coerce")
+                .fillna(0)
+                .astype("int64")
+            )
+        return display.rename(columns=marketplace_labels)
+
+    regular_monthly_display = prepare_monthly_display(
+        regular_monthly_detail
+    )
+    seasonal_monthly_display = prepare_monthly_display(
+        seasonal_monthly_detail
+    )
+    regular_marketplace_display = prepare_marketplace_display(
+        regular_marketplace_detail
+    )
+    seasonal_marketplace_display = prepare_marketplace_display(
+        seasonal_marketplace_detail
+    )
+
+    # ========================================================
+    # DISPLAY
     # ========================================================
 
     st.markdown("")
     st.subheader("Detail Perhitungan Benchmark")
 
-    col_regular, col_seasonal = st.columns(2)
+    tab_regular, tab_seasonal = st.tabs(
+        ["Benchmark Biasa", "Benchmark Seasonal"]
+    )
 
-    # ========================================================
-    # BENCHMARK BIASA
-    # ========================================================
-
-    with col_regular:
-
-        st.markdown("#### Benchmark Biasa")
-
-        regular_display = (
-            regular_data[
-                ["month", "total_gmv"]
-            ]
-            .copy()
+    with tab_regular:
+        st.metric(
+            "Benchmark Biasa",
+            format_currency(benchmark_regular)
+            if benchmark_regular is not None
+            else "-",
         )
-
-        regular_display["month"] = (
-            regular_display["month"]
-            .dt.strftime("%B %Y")
+        st.caption(
+            f"Average {len(regular_data)} bulan non-seasonal"
         )
-
-        regular_display = (
-            regular_display.rename(
-                columns={
-                    "month": "Bulan",
-                    "total_gmv": "GMV",
-                }
-            )
-        )
-
-        regular_display["GMV"] = (
-            regular_display["GMV"]
-            .apply(
-                lambda x:
-                f"{currency_symbol} {x:,.0f}"
-                .replace(",", ".")
-            )
-        )
-
-        st.dataframe(
-            regular_display,
-            hide_index=True,
-            width="stretch",
-        )
-
-        if benchmark_regular is not None:
-
-            st.info(
-                f"Benchmark Biasa = "
-                f"Average {len(regular_data)} bulan = "
-                f"{currency_symbol} "
-                f"{benchmark_regular:,.0f}"
-                .replace(",", ".")
-            )
-
-
-    # ========================================================
-    # BENCHMARK SEASONAL
-    # ========================================================
-
-    with col_seasonal:
-
-        st.markdown("#### Benchmark Seasonal")
-
-        if not seasonal_data.empty:
-
-            seasonal_display = (
-                seasonal_data[
-                    ["month", "total_gmv"]
-                ]
-                .copy()
-            )
-
-            seasonal_display["month"] = (
-                seasonal_display["month"]
-                .dt.strftime("%B %Y")
-            )
-
-            seasonal_display = (
-                seasonal_display.rename(
-                    columns={
-                        "month": "Bulan",
-                        "total_gmv": "GMV",
-                    }
-                )
-            )
-
-            seasonal_display["GMV"] = (
-                seasonal_display["GMV"]
-                .apply(
-                    lambda x:
-                    f"{currency_symbol} {x:,.0f}"
-                    .replace(",", ".")
-                )
-            )
-
+        st.subheader("Benchmark per Bulan")
+        if regular_monthly_display.empty:
+            st.info("Tidak ada bulan non-seasonal yang digunakan.")
+        else:
             st.dataframe(
-                seasonal_display,
+                regular_monthly_display,
                 hide_index=True,
                 width="stretch",
             )
-
-            if benchmark_seasonal is not None:
-
-                st.info(
-                    f"Benchmark Seasonal = "
-                    f"Average {len(seasonal_data)} bulan = "
-                    f"{currency_symbol} "
-                    f"{benchmark_seasonal:,.0f}"
-                    .replace(",", ".")
-                )
-
+        st.subheader("Detail Perhitungan Marketplace")
+        if regular_marketplace_display.empty:
+            st.info("Tidak ada detail marketplace non-seasonal.")
         else:
-
+            st.dataframe(
+                regular_marketplace_display,
+                hide_index=True,
+                width="stretch",
+            )
+        if benchmark_regular is not None:
             st.info(
-                "Belum ada bulan seasonal yang dipilih."
+                f"Benchmark Biasa = Average {len(regular_data)} bulan = "
+                f"{format_currency(benchmark_regular)}"
+            )
+
+    with tab_seasonal:
+        if seasonal_data.empty:
+            st.info("Belum ada bulan seasonal yang dipilih.")
+        else:
+            st.metric(
+                "Benchmark Seasonal",
+                format_currency(benchmark_seasonal),
+            )
+            st.caption(
+                f"Average {len(seasonal_data)} bulan seasonal"
+            )
+            st.subheader("Benchmark per Bulan")
+            st.dataframe(
+                seasonal_monthly_display,
+                hide_index=True,
+                width="stretch",
+            )
+            st.subheader("Detail Perhitungan Marketplace")
+            st.dataframe(
+                seasonal_marketplace_display,
+                hide_index=True,
+                width="stretch",
+            )
+            st.info(
+                f"Benchmark Seasonal = Average {len(seasonal_data)} bulan = "
+                f"{format_currency(benchmark_seasonal)}"
             )
 
 # ============================================================
