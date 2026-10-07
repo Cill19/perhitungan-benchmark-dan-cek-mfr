@@ -33,6 +33,26 @@ def parse_thb(series):
     )
 
 
+def parse_th_datetime(series):
+    """Parse ISO timestamps and Thailand day-first dates without ambiguity."""
+    text = series.astype("string").fillna("").str.strip()
+    iso_mask = text.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}")
+    parsed = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+    parsed.loc[iso_mask] = pd.to_datetime(
+        text.loc[iso_mask],
+        format="mixed",
+        yearfirst=True,
+        errors="coerce",
+    )
+    parsed.loc[~iso_mask] = pd.to_datetime(
+        text.loc[~iso_mask],
+        format="mixed",
+        dayfirst=True,
+        errors="coerce",
+    )
+    return parsed
+
+
 def is_cancelled_th(status):
     """
     Detect Thailand cancelled order.
@@ -157,9 +177,8 @@ def process_shopee_th(df, filename=None):
     # Month Conversion
     # ========================================================
 
-    parsed_date = pd.to_datetime(
-        data["created_time"],
-        errors="coerce"
+    parsed_date = parse_th_datetime(
+        data["created_time"]
     )
 
 
@@ -295,4 +314,3 @@ def process_shopee_th(df, filename=None):
             "source_rows",
         ]
     ]
-    

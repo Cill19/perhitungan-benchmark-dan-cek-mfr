@@ -49,6 +49,12 @@ from thailand_tiktok_engine import (
     parse_tiktok_xlsx,
 )
 
+from thailand_lazada_engine import (
+    parse_lazada_th,
+    process_lazada_th,
+    validate_lazada_th_calculation,
+)
+
 
 # ============================================================
 # MFR ENGINE
@@ -349,6 +355,17 @@ def create_excel_report_single_sheet(
         )
     )
 
+    if is_thailand:
+        monthly = monthly.rename(
+            columns={
+                "month": "Bulan",
+                "shopee": "Shopee",
+                "tiktok": "TikTok",
+                "lazada": "Lazada",
+                "total_gmv": "Total Benchmark GMV",
+            }
+        )
+
 
     table(
         list(monthly.columns),
@@ -370,6 +387,15 @@ def create_excel_report_single_sheet(
         result["monthly_marketplace"]
         .copy()
     )
+
+    if is_thailand:
+        detail["marketplace"] = detail["marketplace"].replace(
+            {
+                "SHO_TH": "SHO",
+                "TIK_TH": "TIK",
+                "LAZ_TH": "LAZ",
+            }
+        )
 
 
     detail["month"] = (
@@ -685,7 +711,11 @@ def render_seasonal_benchmark(
         ).dt.strftime("%B %Y")
         if currency_symbol == "฿":
             display["marketplace"] = display["marketplace"].replace(
-                {"SHO_TH": "SHO", "TIK_TH": "TIK"}
+                {
+                    "SHO_TH": "SHO",
+                    "TIK_TH": "TIK",
+                    "LAZ_TH": "LAZ",
+                }
             )
         currency_columns = [
             "gmv_all",
@@ -1625,6 +1655,8 @@ with st.expander(
         st.markdown(
             """
             - **Shopee Thailand:** GMV exclude cancel − Seller Rebate
+            - **TikTok Thailand:** SKU Subtotal After Discount + SKU Platform Discount untuk pesanan non-cancel
+            - **Lazada Thailand:** unitPrice non-cancel − Seller Discount. Setara dengan (paidPrice − shippingFee) + Platform Discount; platform subsidy tidak ditambahkan lagi ke unitPrice agar tidak double count
             - **Currency:** THB (฿)
             - **Final:** jumlah seluruh marketplace per bulan → average seluruh bulan valid
             """
@@ -1788,7 +1820,20 @@ else:
     with col2:
 
         tok_files = []
-        laz_files = []
+
+        laz_files = st.file_uploader(
+            "Lazada Thailand",
+            type=[
+                "xlsx",
+                "xls",
+                "xlsm",
+                "csv",
+                "txt",
+                "zip",
+            ],
+            accept_multiple_files=True,
+            key="laz_th",
+        )
 
 
 
@@ -1805,6 +1850,9 @@ if is_thailand:
 
         "TIK":
             tik_files or [],
+
+        "LAZ":
+            laz_files or [],
 
     }
 
@@ -2335,6 +2383,16 @@ if calculate:
                                 detected_marketplace = "TIK_TH"
                                 header_row = 0
 
+                            elif is_thailand and marketplace == "LAZ":
+
+                                stream.seek(0)
+                                df = parse_lazada_th(
+                                    stream,
+                                    filename=filename,
+                                )
+                                detected_marketplace = "LAZ_TH"
+                                header_row = int(df.attrs.get("header_row", 0))
+
                             else:
 
                                 stream.seek(0)
@@ -2362,6 +2420,10 @@ if calculate:
                             elif is_thailand and marketplace == "TIK":
 
                                 monthly = process_tiktok_th(df, filename=filename)
+
+                            elif is_thailand and marketplace == "LAZ":
+
+                                monthly = process_lazada_th(df, filename=filename)
 
                             else:
 
@@ -2416,6 +2478,13 @@ if calculate:
                                         "Expected": "THB calculation",
                                     }
                                 ]
+
+                            elif is_thailand and marketplace == "LAZ":
+
+                                file_audit = validate_lazada_th_calculation(
+                                    df,
+                                    monthly,
+                                )
 
                             else:
 
@@ -2719,11 +2788,15 @@ if calculate:
             if "TIK_TH" not in pivot.columns:
                 pivot["TIK_TH"] = 0.0
 
+            if "LAZ_TH" not in pivot.columns:
+                pivot["LAZ_TH"] = 0.0
+
             monthly_combined = pivot[
                 [
                     "month",
                     "SHO_TH",
                     "TIK_TH",
+                    "LAZ_TH",
                 ]
             ].copy()
 
@@ -2732,6 +2805,7 @@ if calculate:
                     columns={
                         "SHO_TH": "shopee",
                         "TIK_TH": "tiktok",
+                        "LAZ_TH": "lazada",
                     }
                 )
             )
@@ -2745,6 +2819,7 @@ if calculate:
                     [
                         "shopee",
                         "tiktok",
+                        "lazada",
                     ]
                 ]
                 .sum(axis=1)
@@ -2928,16 +3003,16 @@ if calculate:
 
         if is_thailand:
             monthly_mp = result.get("monthly_marketplace", pd.DataFrame())
+            thailand_marketplace_labels = {
+                "SHO": ("SHO", "SHO_TH"),
+                "TIK": ("TIK", "TIK_TH"),
+                "LAZ": ("LAZ", "LAZ_TH"),
+            }
             for marketplace in active_marketplaces:
-                if marketplace == "SHO":
-                    label = "SHO_TH"
-                    target_mp = "SHO_TH"
-                elif marketplace == "TIK":
-                    label = "TIK_TH"
-                    target_mp = "TIK_TH"
-                else:
-                    label = marketplace
-                    target_mp = marketplace
+                label, target_mp = thailand_marketplace_labels.get(
+                    marketplace,
+                    (marketplace, marketplace),
+                )
 
                 if not monthly_mp.empty and "marketplace" in monthly_mp.columns:
                     val = (
@@ -3033,6 +3108,16 @@ if calculate:
                         lambda x: f"฿{x:,.0f}"
                     )
 
+            monthly_display = monthly_display.rename(
+                columns={
+                    "month": "Bulan",
+                    "shopee": "Shopee",
+                    "tiktok": "TikTok",
+                    "lazada": "Lazada",
+                    "total_gmv": "Total Benchmark GMV",
+                }
+            )
+
         else:
 
             for col in monthly_display.columns:
@@ -3088,6 +3173,16 @@ if calculate:
                 - **Seller Rebate**: Kolom **SKU Seller Discount** (Diskon ditanggung Seller)
                 - **Benchmark**: GMV Exclude Cancel - SKU Seller Discount (setara dengan SKU Subtotal After Discount + Platform Discount)
 
+                ---
+
+                **Lazada Thailand calculation:**
+                - **GMV All**: Total gross line item dari kolom **unitPrice**
+                - **GMV Exclude Cancel**: **unitPrice** dengan status selain **canceled/cancelled**
+                - **Platform Discount**: Nilai absolut **platformDiscountTotal** untuk line item non-cancel
+                - **Seller Rebate**: Nilai absolut **sellerDiscountTotal** untuk line item non-cancel
+                - **Benchmark**: GMV Exclude Cancel - Seller Rebate
+                - Formula ekuivalen dari raw: **(paidPrice - shippingFee) + Platform Discount**. Platform subsidy tidak ditambahkan lagi ke unitPrice agar tidak double count.
+
                 **Currency:** THB (฿)
                 """
             )
@@ -3104,10 +3199,11 @@ if calculate:
                 .replace(
                     {
                         "SHO_TH": "SHO",
-                "TIK_TH": "TIK",
-            }
-        )
-    )
+                        "TIK_TH": "TIK",
+                        "LAZ_TH": "LAZ",
+                    }
+                )
+            )
     
 
 
